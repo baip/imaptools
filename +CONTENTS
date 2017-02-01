@@ -1,0 +1,60 @@
+@comment PKG_FORMAT_REVISION:1.1
+@name imaptools-1.135
+@comment ORIGIN:mail/imaptools
+@cwd /usr/local
+@pkgdep perl-5.14.2_2
+@comment DEPORIGIN:lang/perl5.14
+@conflicts imaputils-[0-9]*
+share/licenses/imaptools-1.135/catalog.mk
+@comment MD5:c5932c14871624639e2336f213b556c7
+share/licenses/imaptools-1.135/LICENSE
+@comment MD5:76eba9ea0f72622297de8da9794f88a4
+share/licenses/imaptools-1.135/ISCL
+@comment MD5:b31ed7b686f9e0711023a7e0f00f7663
+bin/IMAPtoMbox.pl
+@comment MD5:d41f4010b56cad570ef7dd1a5c655a16
+bin/MboxtoIMAP.pl
+@comment MD5:15dd283c446785035a64a8be0af80aff
+bin/delIMAPdups.pl
+@comment MD5:e2ccb19a1bb96862418016f1b269ca44
+bin/delete_imap_mailboxes.pl
+@comment MD5:e4cf57b0ac872552aed50c6012ce7dde
+bin/dumptoIMAP.pl
+@comment MD5:d88cc45339e13b04c14d489a8cd325c6
+bin/imapCapability.pl
+@comment MD5:0dce8984e763d971f716deee4cd54a31
+bin/imapPing.pl
+@comment MD5:45987d8eb0fd4528ed4dcb81ac6839ac
+bin/imap_to_maildir.pl
+@comment MD5:2c362ad5334104988970d4c1fa1ff983
+bin/imapcopy.pl
+@comment MD5:623e1e03a5bacf6ecaddf4322a7fd056
+bin/imapdump.pl
+@comment MD5:8bd0d82a904a20062a17983325d91e0c
+bin/imapfilter.pl
+@comment MD5:fc87b26eb7ef2c4176a9fbfb06dabf3e
+bin/imapsync.pl
+@comment MD5:88264b651a4548fd7581568196c0677e
+bin/list_folders.pl
+@comment MD5:7d5da6e8f479b975a672d5dfc29a47f3
+bin/list_imap_folders.pl
+@comment MD5:a35ae5d59e3f67791660eb9004b7bb24
+bin/maildir_to_imap.pl
+@comment MD5:55d95511e5568239b217231c2c8e8ffb
+bin/mbxIMAPsync.pl
+@comment MD5:6a7da2052533b487ac90385082c7dfcc
+bin/migrateIMAP-win.pl
+@comment MD5:ef6cf32c480da00ec76381cdc938e8d8
+bin/migrateIMAP.pl
+@comment MD5:dbf235eda06cd7f5da926b648d7ba16c
+bin/mozillatoIMAP.pl
+@comment MD5:e5f9d63b8f3c79c68fe3def3d874c655
+bin/pop3toimap.pl
+@comment MD5:a798c78dd057791950a3464fbbe1ef38
+bin/purgeMbx.pl
+@comment MD5:443a95192a8deda888bd29f0622758a0
+bin/trash.pl
+@comment MD5:c79bdb8d524c2d0e1a68ae5a31a28f55
+@cwd 
+@dirrm share/licenses/imaptools-1.135
+@unexec rmdir %D/share/licenses 2>/dev/null || true
