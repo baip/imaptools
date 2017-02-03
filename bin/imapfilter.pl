@@ -801,17 +801,35 @@ my $moved=0;
 
    my @msgs = split(/,/, $msglist);
    my $moved = $#msgs + 1;
-   sendCommand ($conn, "1 COPY $msglist \"$dstmbx\"");
-   while (1) {
-        readResponse ( $conn );
-        last if $response =~ /^1 OK/i;
-        if ($response =~ /^1 NO|^1 BAD/) {
-           Log("unexpected COPY response: $response");
-           Log("Please verify that mailbox $dstmbx exists");
-           exit;
+   if (1) {
+        my $num_msgs=500;
+        $moved=0;
+        while (my @msgs_tmp = splice @msgs, 0, $num_msgs) {
+            $msglist=join(",", @msgs_tmp);
+            sendCommand ($conn, "1 COPY $msglist \"$dstmbx\"");
+            while (1) {
+                 readResponse ( $conn );
+                 last if $response =~ /^1 OK/i;
+                 if ($response =~ /^1 NO|^1 BAD/) {
+                      Log("unexpected COPY response: $response");
+                      Log("Please verify that mailbox $dstmbx exists");
+                      exit;
+                 }
+            }
+            $moved+=$#msgs_tmp+1;
+        }
+   } else {
+        sendCommand ($conn, "1 COPY $msglist \"$dstmbx\"");
+        while (1) {
+             readResponse ( $conn );
+             last if $response =~ /^1 OK/i;
+             if ($response =~ /^1 NO|^1 BAD/) {
+                  Log("unexpected COPY response: $response");
+                  Log("Please verify that mailbox $dstmbx exists");
+                  exit;
+             }
         }
    }
-
    return $moved;
 }
 
@@ -832,15 +850,33 @@ my $rc;
         last if $response=~ /^1 NO|^1 BAD/;
    }
 
-   sendCommand ( $conn, "1 STORE $msglist +FLAGS (\\Deleted)");
-   while (1) {
-        readResponse ($conn);
-        if ( $response =~ /^1 NO|^1 BAD/ ) {
-	   Log("Error setting \Deleted flags");
-           Log("Unexpected STORE response: $response");
-           return 0;
+   if (1) {
+        my @msgs = split(/,/, $msglist);
+        my $num_msgs=500;
+        while (my @msgs_tmp = splice @msgs, 0, $num_msgs) {
+            $msglist=join(",", @msgs_tmp);
+            sendCommand ( $conn, "1 STORE $msglist +FLAGS (\\Deleted)");
+            while (1) {
+                 readResponse ($conn);
+                 if ( $response =~ /^1 NO|^1 BAD/ ) {
+                Log("Error setting \Deleted flags");
+                    Log("Unexpected STORE response: $response");
+                    return 0;
+                 }
+                 last if $response =~ /^1 OK/i;
+            }
         }
-        last if $response =~ /^1 OK/i;
+   } else {
+        sendCommand ( $conn, "1 STORE $msglist +FLAGS (\\Deleted)");
+        while (1) {
+             readResponse ($conn);
+             if ( $response =~ /^1 NO|^1 BAD/ ) {
+            Log("Error setting \Deleted flags");
+                Log("Unexpected STORE response: $response");
+                return 0;
+             }
+             last if $response =~ /^1 OK/i;
+        }
    }
 
    expungeMbx( $mbx, $conn );
