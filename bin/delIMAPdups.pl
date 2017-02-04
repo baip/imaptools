@@ -16,7 +16,7 @@
 #   messages across multiple mailboxes since it is often useful to    #
 #   cross-file messages in multiple mailboxes.                        #
 #                                                                     #
-#   Usage:    ./deldups -S host/user/password                         # 
+#   Usage:    ./deldups -S host/user/password                         #
 #                       [-m mailbox list (comma-delimited)]           #
 #                       [-L logfile]                                  #
 #                       [-p]   purge messages                         #
@@ -45,6 +45,7 @@ use FileHandle;
 use Fcntl;
 use Getopt::Std;
 use IO::Socket;
+use feature 'state';
 
 #################################################################
 #            Main program.                                      #
@@ -69,10 +70,10 @@ use IO::Socket;
         Log("   Checking mailbox $mbx");
         %msgList = ();
         @msgs = ();
-	getMsgList( $keyfield, $mbx, \@msgs, $conn ); 
+	getMsgList( $keyfield, $mbx, \@msgs, $conn );
         selectMbx( $mbx, $conn);
         foreach $msg ( @msgs ) {
-             # ($msgnum,$msgid,$subject,$date) = split(/\|/, $msg); 
+             # ($msgnum,$msgid,$subject,$date) = split(/\|/, $msg);
              ($msgnum,$key,$date) = split(/\|\|\|/, $msg);
 
              if ( $md5_hash ) {
@@ -103,7 +104,13 @@ use IO::Socket;
                 if ( $move2mbx ) {
                    $moved++ if moveMsg( $mbx, $msgnum, $move2mbx, $conn );
                 }
-                deleteMsg( $mbx, $msgnum, $conn );
+                do {
+                    if (deleteMsg( $mbx, $msgnum, $conn )) {
+                        last;
+                    } else {
+                        recover($conn, $mbx, "");
+                    }
+                } while (1);
                 $expungeMbxs{"$mbx"} = 1;
              }
         }
@@ -151,7 +158,7 @@ sub init {
    if ( $logfile ) {
       if ( !open(LOG, ">> $logfile")) {
          print STDOUT "Can't open $logfile: $!\n";
-      } 
+      }
       select(LOG); $| = 1;
    }
    Log("\n$0 starting");
@@ -201,7 +208,7 @@ sub readResponse
 #
 
 sub Log {
- 
+
 my $str = shift;
 
    #  If a logile has been specified then write the output to it
@@ -214,7 +221,7 @@ my $str = shift;
       $line = sprintf ("%.2d-%.2d-%d.%.2d:%.2d:%.2d %s %s\n",
 		     $mon + 1, $mday, $year + $yr, $hour, $min, $sec,$$,$str);
       print LOG "$line";
-   } 
+   }
    print STDOUT "$str\n";
 
 }
@@ -228,7 +235,7 @@ my $host = shift;
 my $conn = shift;
 
    Log("Connecting to $host") if $debug;
-   
+
    ($host,$port) = split(/:/, $host);
    $port = 143 unless $port;
 
@@ -269,7 +276,7 @@ my $conn = shift;
         warn "Error connecting to $host:$port: $@";
         exit;
       }
-   } 
+   }
    Log("Connected to $host on port $port");
 
 }
@@ -290,7 +297,7 @@ my $mode;
       #  Standard SSL port
       return 'SSL';
    }
-      
+
    unless ( $ssl_installed ) {
       #  We don't have SSL installed on this machine
       return '';
@@ -319,7 +326,7 @@ my $mode;
 #
 #  remove leading and trailing spaces from a string
 sub trim {
- 
+
 local (*string) = @_;
 
    $string =~ s/^\s+//;
@@ -399,9 +406,9 @@ my @mbxs;
       #  The user has supplied a list of mailboxes so only processes
       #  the ones in that list
       @mbxs = split(/,/, $mbxList);
-      # for $i (0..$#mbxs ) { 
-      #	$mbxs[$i] =~ s/^\s+//; 
-      #	$mbxs[$i] =~ s/\s+$//; 
+      # for $i (0..$#mbxs ) {
+      #	$mbxs[$i] =~ s/^\s+//;
+      #	$mbxs[$i] =~ s/\s+$//;
       # }
       return @mbxs;
    }
@@ -477,29 +484,50 @@ my $msgnum;
 		# print STDERR "Error: $response\n";
 		return 0;
 	}
-        elsif ( $response =~ /^* 0 EXISTS/i ) {
-                $empty = 1;
-        }
+    elsif ( $response =~ /\* (.+) EXISTS/i ) {
+        $count = $1;
+    }
    }
 
-   return if $empty;
+   return unless $count;
 
-   sendCommand ( $conn, "1 FETCH 1:* (uid flags internaldate body[header.fields ($field)])");
    undef @response;
+   my $num_msgs=5000;
+   my $uid2;
+   for (my $uid1=1; $uid1<=$count; $uid1+=$num_msgs) {
+   $uid2=$uid1+$num_msgs-1;
+   if ($uid2>$count) {
+       $uid2='*';
+   }
+   sendCommand ( $conn, "1 FETCH $uid1:$uid2 (uid flags internaldate body[header.fields ($field)])");
    while ( 1 ) {
 	readResponse ( $conn );
 	if ( $response =~ /^1 OK/i ) {
 		# print STDERR "response $response\n";
+        pop(@response);
 		last;
 	}
-        elsif ( $response =~ /Broken pipe|Connection reset by peer/i ) {
+    elsif ( $response =~ /Broken pipe|Connection reset by peer|\* BYE Connection is closed|Server Unavailable/i ) {
+        pop(@response);
+        for (my $i=$#response; $i>=0; $i--) {
+            if ( $response[$i] =~ /\* (.+) FETCH/ ) {
+                ($msgnum) = split(/\s+/, $1);
+                last;
+            }
+        }
+        if ($i>=0) {
+            $msgnum++;
+            recover($conn, $mailbox, "1 FETCH $msgnum:$uid2 (uid flags internaldate body[header.fields ($field)])");
+        } else {
               print STDOUT "Fetch from $mailbox: $response\n";
               exit;
         }
-        elsif ( $response =~ /^1 BAD|^1 NO/i ) {
-              Log("Unexpected response $response");
-              return 0;
-        }
+    }
+    elsif ( $response =~ /^1 BAD|^1 NO/i ) {
+        Log("Unexpected response $response");
+        return 0;
+    }
+   }
    }
 
    #  Get a list of the msgs in the mailbox
@@ -509,8 +537,6 @@ my $msgnum;
    for $i (0 .. $#response) {
 	$seen=0;
 	$_ = $response[$i];
-
-	last if /OK FETCH complete/;
 
 	if ( $response[$i] =~ /FETCH \(UID / ) {
 	   $response[$i] =~ /\* ([^FETCH \(UID]*)/;
@@ -567,7 +593,7 @@ my $message = shift;
 	if ( $response =~ /^$rsn OK/i ) {
 		$size = length($message);
 		last;
-	} 
+	}
 	elsif ($response =~ /message number out of range/i) {
 		Log ("Error fetching uid $uid: out of range",2);
 		$stat=0;
@@ -584,7 +610,7 @@ my $message = shift;
 		$stat=0;
 		last;
 	}
-	elsif 
+	elsif
 	   ($response =~ /^\*\s+$msgnum\s+FETCH\s+\(.*RFC822\s+\{[0-9]+\}/i) {
 		($len) = ($response =~ /^\*\s+$msgnum\s+FETCH\s+\(.*RFC822\s+\{([0-9]+)\}/i);
 		$cc = 0;
@@ -680,20 +706,19 @@ sub deleteMsg {
 my $mbx    = shift;
 my $msgnum = shift;
 my $conn   = shift;
-my $rc;
+my $rc = 0;
 
    sendCommand ( $conn, "1 STORE $msgnum +FLAGS (\\Deleted)");
    while (1) {
         readResponse ($conn);
-        if ( $response =~ /^1 OK/i ) {
+    if ( $response =~ /^1 OK/i ) {
 	   $rc = 1;
 	   Log("       Marked msg number $msgnum for delete");
 	   last;
 	}
 
-	if ( $response =~ /^1 BAD|^1 NO/i ) {
+	elsif ( $response =~ /^1 BAD|^1 NO/i ) {
 	   Log("Error setting \Deleted flag for msg $msgnum: $response");
-	   $rc = 0;
 	   last;
 	}
    }
@@ -826,7 +851,7 @@ my $moved=0;
         readResponse ( $conn );
         if ( $response =~ /^1 OK/i ) {
            $moved=1;
-           last; 
+           last;
         }
         if ($response =~ /^1 NO|^1 BAD/) {
            Log("unexpected COPY response: $response");
@@ -855,7 +880,7 @@ my $boundary;
          }
          $header = 0 if length( $_ ) == 1;
       }
-       
+
       next if /$boundary/;
       $body .= "$_\n" unless $header;
    }
@@ -881,7 +906,7 @@ my $message = shift;
 	if ( $response =~ /^1 OK/i ) {
 		$size = length($message);
 		last;
-	} 
+	}
 	elsif ($response =~ /message number out of range/i) {
 		Log ("Error fetching uid $uid: out of range",2);
 		$stat=0;
@@ -898,7 +923,7 @@ my $message = shift;
 		$stat=0;
 		last;
 	}
-	elsif 
+	elsif
 	   ($response =~ /^\*\s+$msgnum\s+FETCH\s+\(.*RFC822\s+\{[0-9]+\}/i) {
 		($len) = ($response =~ /^\*\s+$msgnum\s+FETCH\s+\(.*RFC822\s+\{([0-9]+)\}/i);
 		$cc = 0;
@@ -926,16 +951,33 @@ my $conn = shift;
 
    #  Select the mailbox
 
+   Log("SELECT $mbx") if $debug;
    sendCommand( $conn, "1 SELECT \"$mbx\"");
    while ( 1 ) {
       readResponse( $conn );
       if ( $response =~ /^1 OK/i ) {
-         last;
-      } elsif ( $response =~ /^1 NO|^1 BAD|^\* BYE/i ) {
+         return 0;
+      } elsif ( $response =~ /^1 NO|^1 BAD|^\* BYE|Server Unavailable/i ) {
          Log("Unexpected response to SELECT $mbx command: $response");
-         last;
+         return 1;
       }
    }
 
+}
+
+sub recover {
+   my $conn = shift;
+   my $mbx = shift;
+   my $cmd = shift;
+   my $retry_wait = 5;
+   local @response=();
+   do {
+       Log("Wait $retry_wait seconds before retrying ...");
+       sleep $retry_wait;
+       $retry_wait *= 2 if $retry_wait < 1800;
+       connectToHost($host, \$conn) or die;
+       login($user,$pwd,$conn) or die;
+   } while (selectMbx($mbx, $conn));
+   sendCommand($conn, $cmd) if $cmd;
 }
 

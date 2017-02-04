@@ -18,10 +18,10 @@
 #   example From, Subject, To, cc, etc.  A destination mailbox may    #
 #   a local one or on a remote IMAP server.  Connection information   #
 #   for remote servers is provided by the "RemoteServer" keyword in   #
-#   the rules file, eg RemoteServer: myhost/myuser/mypassword. A      # 
+#   the rules file, eg RemoteServer: myhost/myuser/mypassword. A      #
 #   remote mailbox is defined in the rules as remotehost:mbx_name.    #
 #                                                                     #
-#   ./imapfilter.pl -S host/user/password -r <rules file> [-d] [-I]   # 
+#   ./imapfilter.pl -S host/user/password -r <rules file> [-d] [-I]   #
 #                                                                     #
 #   Optional arguments:                                               #
 #	-d debug                                                      #
@@ -46,6 +46,7 @@ use FileHandle;
 use Fcntl;
 use Getopt::Std;
 use IO::Socket;
+use feature 'state';
 
 #################################################################
 #            Main program.                                      #
@@ -95,7 +96,7 @@ sub init {
    if ( $logfile ) {
       if ( !open(LOG, ">>$logfile")) {
          print STDERR "Can't open $logfile: $!\n";
-      } 
+      }
       select(LOG); $| = 1;
    }
    Log("$0 starting");
@@ -218,7 +219,7 @@ my $marked = 0;
            } else {
               # Mark the msg for transfer to dst mailbox if the field value matches
               $search =~ s/^\*/\.\*/;       # Replace leading * with .*
-            
+
               Log("value  >$value<")  if $debug;
               Log("search >$search<") if $debug;
 
@@ -234,7 +235,7 @@ my $marked = 0;
               } else {
                  $match = 1 if $value =~ /$search/i;
               }
-                
+
               if ( $match ) {
                  if ( $first_match ) {
                     #  If "first match" option is enabled we only apply
@@ -243,7 +244,7 @@ my $marked = 0;
                     unless( $COPY{"$rule"} ) {
                        next if $MATCH{"$srcmbx $msgnum"};
                     }
-                 }               
+                 }
                  $MATCH{"$srcmbx $msgnum"} = 1;
 
                  $$moves{"$srcmbx|$dstmbx"} .= "$msgnum,";
@@ -252,7 +253,7 @@ my $marked = 0;
                     #  User has flagged this rule for copy not move
                     $COPY_ONLY{"$srcmbx|$dstmbx|$msgnum"} = 1;
                  }
- 
+
                  $RULE = $rule; $RULE =~ s/\t/ /g;
                  Log("   msgnum $msgnum in $srcmbx matches rule: '$RULE'");
 
@@ -287,27 +288,33 @@ my $remhosts = shift;
       ($srcmbx,$dstmbx) = split(/\|/, $mbx);
 
       $msglist =~ s/,$//;
-      #  Move 'em
-      if ( $dstmbx =~ /:/ ) {
-         $moved = move_remote( $srcconn, $srcmbx, $dstmbx, $msglist, $remhosts );
-      } else {
-         $moved = move_local( $srcconn, $msglist, $srcmbx, $dstmbx );
+
+      my @msgs = sort { $b <=> $a } (split(/,/, $msglist));
+      my $num_msgs=1500;
+      while (my @msgs_tmp = splice(@msgs, 0, $num_msgs)) {
+          $msglist=join(",", @msgs_tmp);
+          #  Move 'em
+          if ( $dstmbx =~ /:/ ) {
+             $moved = move_remote( $srcconn, $srcmbx, $dstmbx, $msglist, $remhosts );
+          } else {
+             $moved = move_local( $srcconn, $msglist, $srcmbx, $dstmbx );
+          }
+          $totalMoves += $moved;
+
+          #  Remove msgnums which are 'copy' not 'move'
+
+          my $msg_list;
+
+          foreach $msgnum ( split(/,/,$msglist) ) {
+             next if $COPY_ONLY{"$srcmbx|$dstmbx|$msgnum"};
+             $msg_list .= "$msgnum,";
+          }
+          chop $msg_list;
+
+          deleteMsgs( $msg_list, $srcmbx,  $srcconn ) if $moved;
+
+          Log("   Moved $moved message(s) from $srcmbx to $dstmbx");
       }
-      $totalMoves += $moved;
-
-      #  Remove msgnums which are 'copy' not 'move'
-      
-      my $msg_list;
-
-      foreach $msgnum ( split(/,/,$msglist) ) {
-         next if $COPY_ONLY{"$srcmbx|$dstmbx|$msgnum"};
-         $msg_list .= "$msgnum,";
-      }
-      chop $msg_list;
-          
-      deleteMsgs( $msg_list, $srcmbx,  $srcconn ) if $moved;
-
-      Log("   Moved $moved message(s) from $srcmbx to $dstmbx");
    }
 }
 
@@ -353,7 +360,7 @@ local($fd) = shift @_;
 #
 
 sub Log {
- 
+
 my $str = shift;
 
    #  If a logile has been specified then write the output to it
@@ -381,7 +388,7 @@ my $host = shift;
 my $conn = shift;
 
    Log("Connecting to $host") if $debug;
-   
+
    ($host,$port) = split(/:/, $host);
    $port = 143 unless $port;
 
@@ -424,7 +431,7 @@ my $conn = shift;
         warn "Error connecting to $host:$port: $@";
         exit;
       }
-   } 
+   }
    Log("Connected to $host on port $port") if $debug;
 
    return 1;
@@ -435,7 +442,7 @@ my $conn = shift;
 #
 #  remove leading and trailing spaces from a string
 sub trim {
- 
+
 local (*string) = @_;
 
    $string =~ s/^\s+//;
@@ -513,7 +520,7 @@ my $message;
 	if ( $response =~ /^1 OK/i ) {
 		$size = length($message);
 		last;
-	} 
+	}
 	elsif ($response =~ /message number out of range/i) {
 		Log ("Error fetching uid $uid: out of range",2);
 		$stat=0;
@@ -530,7 +537,7 @@ my $message;
 		$stat=0;
 		last;
 	}
-	elsif 
+	elsif
 	   ($response =~ /^\*\s+$msgnum\s+FETCH\s+\(.*RFC822\s+\{[0-9]+\}/i) {
 		($len) = ($response =~ /^\*\s+$msgnum\s+FETCH\s+\(.*RFC822\s+\{([0-9]+)\}/i);
 		$cc = 0;
@@ -566,7 +573,7 @@ my $internaldate;
 	if ( $response =~ /^1 OK/i ) {
 		# print STDERR "response $response\n";
 		last;
-	} 
+	}
         last if $response =~ /^1 NO|^1 BAD/;
    }
 
@@ -590,7 +597,7 @@ my $internaldate;
            $response[$i] =~ /INTERNALDATE "(.+)"/;
            # $response[$i] =~ /INTERNALDATE "(.+)" BODY/;
            $date = $1;
-           
+
            $date =~ /"(.+)"/;
            $date = $1;
            $date =~ s/"//g;
@@ -799,35 +806,18 @@ my $moved=0;
         }
    }
 
-   my @msgs = split(/,/, $msglist);
-   my $moved = $#msgs + 1;
-   if (1) {
-        my $num_msgs=500;
-        $moved=0;
-        while (my @msgs_tmp = splice @msgs, 0, $num_msgs) {
-            $msglist=join(",", @msgs_tmp);
-            sendCommand ($conn, "1 COPY $msglist \"$dstmbx\"");
-            while (1) {
-                 readResponse ( $conn );
-                 last if $response =~ /^1 OK/i;
-                 if ($response =~ /^1 NO|^1 BAD/) {
-                      Log("unexpected COPY response: $response");
-                      Log("Please verify that mailbox $dstmbx exists");
-                      exit;
-                 }
-            }
-            $moved+=$#msgs_tmp+1;
+   my $moved = $msglist =~ tr/,/,/ + 1;
+   sendCommand ($conn, "1 COPY $msglist \"$dstmbx\"");
+   while (1) {
+        readResponse ( $conn );
+        last if $response =~ /^1 OK/i;
+        if ($response =~ /^1 NO|^1 BAD/) {
+             Log("unexpected COPY response: $response");
+             Log("Please verify that mailbox $dstmbx exists");
+             exit;
         }
-   } else {
-        sendCommand ($conn, "1 COPY $msglist \"$dstmbx\"");
-        while (1) {
-             readResponse ( $conn );
-             last if $response =~ /^1 OK/i;
-             if ($response =~ /^1 NO|^1 BAD/) {
-                  Log("unexpected COPY response: $response");
-                  Log("Please verify that mailbox $dstmbx exists");
-                  exit;
-             }
+        elsif ( $response =~ /Broken pipe|Connection reset by peer|\* BYE Connection is closed|Server Unavailable/i ) {
+            recover($conn, $srcmbx, "1 COPY $msglist \"$dstmbx\"");
         }
    }
    return $moved;
@@ -842,40 +832,17 @@ my $rc;
 
    return if $msglist eq '';
 
-   Log("Send select command for $mbx") if $debug;
-   sendCommand ($conn, "1 SELECT \"$mbx\"");
+   sendCommand ( $conn, "1 STORE $msglist +FLAGS (\\Deleted)");
    while (1) {
         readResponse ($conn);
-        last if ( $response =~ /^1 OK/i );
-        last if $response=~ /^1 NO|^1 BAD/;
-   }
-
-   if (1) {
-        my @msgs = split(/,/, $msglist);
-        my $num_msgs=500;
-        while (my @msgs_tmp = splice @msgs, 0, $num_msgs) {
-            $msglist=join(",", @msgs_tmp);
-            sendCommand ( $conn, "1 STORE $msglist +FLAGS (\\Deleted)");
-            while (1) {
-                 readResponse ($conn);
-                 if ( $response =~ /^1 NO|^1 BAD/ ) {
-                Log("Error setting \Deleted flags");
-                    Log("Unexpected STORE response: $response");
-                    return 0;
-                 }
-                 last if $response =~ /^1 OK/i;
-            }
+        last if $response =~ /^1 OK/i;
+        if ( $response =~ /^1 NO|^1 BAD/ ) {
+           Log("Error setting \Deleted flags");
+           Log("Unexpected STORE response: $response");
+           return 0;
         }
-   } else {
-        sendCommand ( $conn, "1 STORE $msglist +FLAGS (\\Deleted)");
-        while (1) {
-             readResponse ($conn);
-             if ( $response =~ /^1 NO|^1 BAD/ ) {
-            Log("Error setting \Deleted flags");
-                Log("Unexpected STORE response: $response");
-                return 0;
-             }
-             last if $response =~ /^1 OK/i;
+        elsif ( $response =~ /Broken pipe|Connection reset by peer|\* BYE Connection is closed|Server Unavailable/i ) {
+            recover($conn, $mbx, "1 STORE $msglist +FLAGS (\\Deleted)");
         }
    }
 
@@ -889,16 +856,6 @@ my $mbx   = shift;
 my $conn  = shift;
 
    Log("   Expunging mailbox $mbx") if $debug;
-
-   sendCommand ($conn, "1 SELECT \"$mbx\"");
-   while (1) {
-        readResponse ($conn);
-        if ( $response =~ /^1 NO|^1 BAD/i ) {
-           Log("Unexpected EXPUNGE response: $response ");
-           return 0;
-        }
-        last if ( $response =~ /^1 OK/i );
-   }
 
    sendCommand ( $conn, "1 EXPUNGE");
    $expunged=0;
@@ -1033,10 +990,10 @@ my %values;
    $empty=0;
    while ( 1 ) {
 	readResponse ( $conn );
-        if ( $response =~ /\* (.+) EXISTS/i ) {
-           $count = $1;
-        }
-	if ( $response =~ /^1 OK/i ) {
+    if ( $response =~ /\* (.+) EXISTS/i ) {
+        $count = $1;
+    }
+	elsif ( $response =~ /^1 OK/i ) {
 		# print STDERR "response $response\n";
 		last;
 	}
@@ -1049,18 +1006,43 @@ my %values;
    Log("$mbx has $count msgs") if $debug;
    return if $count == 0;
 
-   sendCommand ( $conn, "1 FETCH 1:* (uid rfc822.size flags internaldate body[header.fields ($field)])");
    @response = ();
+   my $num_msgs=5000;
+   my $uid2;
+   for (my $uid1=1; $uid1<=$count; $uid1+=$num_msgs) {
+   $uid2=$uid1+$num_msgs-1;
+   if ($uid2>$count) {
+       $uid2='*';
+   }
+   sendCommand ( $conn, "1 FETCH $uid1:$uid2 (uid rfc822.size flags internaldate body[header.fields ($field)])");
    while ( 1 ) {
 	readResponse ( $conn );
 	if ( $response =~ /^1 OK/i ) {
 		# print STDERR "response $response\n";
+        pop(@response);
 		last;
 	}
-        elsif ( $response =~ /Broken pipe|Connection reset by peer/i ) {
-              Log("Fetch from $mailbox: $response");
-              exit;
+    elsif ( $response =~ /Broken pipe|Connection reset by peer|\* BYE Connection is closed|Server Unavailable/i ) {
+        pop(@response);
+        for (my $i=$#response; $i>=0; $i--) {
+            if ( $response[$i] =~ /\* (.+) FETCH/ ) {
+                ($msgnum) = split(/\s+/, $1);
+                last;
+            }
         }
+        if ($i>=0) {
+            $msgnum++;
+            recover($conn, $mbx, "1 FETCH $msgnum:$uid2 (uid rfc822.size flags internaldate body[header.fields ($field)])");
+        } else {
+            Log("Fetch from $mailbox: $response");
+            exit;
+        }
+    }
+    elsif ( $response =~ /^1 BAD|^1 NO/i ) {
+        Log("Unexpected response $response");
+        return 0;
+    }
+   }
    }
 
    #  Get a list of the msgs in the mailbox
@@ -1069,8 +1051,6 @@ my %values;
    for $i (0 .. $#response) {
 	$seen=0;
 	$_ = $response[$i];
-
-	last if /OK FETCH complete/;
 
         if ( $response[$i] =~ /\* (.+) FETCH/ ) {
            ($msgnum) = split(/\s+/, $1);
@@ -1081,7 +1061,7 @@ my %values;
               ($size) = split(/\s+/, $1);
               $_ = $response[$i] = "Size: $size";
            }
-        } 
+        }
 
 	if ($response[$i] =~ /FLAGS/) {
 	    #  Get the list of flags
@@ -1092,7 +1072,7 @@ my %values;
 	}
         if ( $response[$i] =~ /INTERNALDATE ([^\)]*)/ ) {
             $date = $1;
-	    # $response[$i] =~ /INTERNALDATE ([^BODY]*)/i; 
+	    # $response[$i] =~ /INTERNALDATE ([^BODY]*)/i;
             # $date = $1;
             $date =~ s/"//g;
             $date =~ s/^\s+//;
@@ -1198,7 +1178,7 @@ my $delimiter = shift;
       }
       last if /^NO|^BAD/;
    }
- 
+
 }
 
 sub mailboxName {
@@ -1257,8 +1237,8 @@ my $dstmbx;
        }
        $dstDelim = "\\$dstDelim" if $dstDelim eq '.';
        $dstmbx =~ s#^$dstDelim##;
-   } 
-      
+   }
+
    if ( $root_mbx ) {
       #  Put folders under a 'root' folder on the dst
       $dstDelim =~ s/\./\\./g;
@@ -1298,7 +1278,7 @@ my %mbxs;
    unless ( $expand ) {
      #  No need to change the rules
      @mbxs = sort keys %mbxs;
-     return @mbxs;   
+     return @mbxs;
    }
 
    #  Get a list of the user's mailboxes
@@ -1481,9 +1461,9 @@ my $match=0;
       $rule_date = substr( $rule_date,1);
    } else {
       $oper = '';
-   } 
- 
-   # If no operator specified treat date as just 
+   }
+
+   # If no operator specified treat date as just
    # another string and look for match
    # $match = 1 if $rule_date =~ /$msg_date/i;
    # return $match;
@@ -1498,18 +1478,18 @@ $rule_date =~ s/^\s+|\s+$//g;
       $rule_date =~ s/\*$//;
    }
 
-   # if ( $rule_date !~ /[\s+]/ ) { 
+   # if ( $rule_date !~ /[\s+]/ ) {
    if ( isNumber( $rule_date ) ) {
       #  Rule has a delta time rather than a fixed date
       $rule_date = convert_delta_date( $rule_date );
    } else {
    }
 
-   my $rdate = DateTime::Format::DateParse -> parse_datetime( $rule_date );  
+   my $rdate = DateTime::Format::DateParse -> parse_datetime( $rule_date );
 
    ($msg_date) = split(/ Mount|\(/, $msg_date);
 
-   eval '$mdate = DateTime::Format::Mail -> parse_datetime( $msg_date )';        
+   eval '$mdate = DateTime::Format::Mail -> parse_datetime( $msg_date )';
    if ( $@ ) {
       Log("Bad date: $msg_date.  The rule cannot be evaluated.");
       return '';
@@ -1526,7 +1506,7 @@ $rule_date =~ s/^\s+|\s+$//g;
    # compare result is  -1 if earlier, 0 if the same, and 1 if later
    #
 
-   my $cmp = DateTime -> compare ( $mdate, $rdate );                     
+   my $cmp = DateTime -> compare ( $mdate, $rdate );
 
    if ( $debug ) {
       $line = pack("A5 A25 A25", $cmp, $mdate, $rdate);
@@ -1538,7 +1518,7 @@ $rule_date =~ s/^\s+|\s+$//g;
       Log("   Message date is earlier than Rule date") if $cmp == -1;
       Log("   Message date is later than Rule date")   if $cmp == 1;
    }
- 
+
    $oper = -1 if $oper eq '<';
    $oper =  0 if $oper eq '=';
    $oper =  1 if $oper eq '>';
@@ -1548,7 +1528,7 @@ $rule_date =~ s/^\s+|\s+$//g;
    if ( $cmp == $oper ) {
       # Log("$msg_date matches");
       $match = 1;
-   } 
+   }
 
    Log("match = $match") if $debug;
 
@@ -1565,7 +1545,7 @@ my $date = shift;
   #  them if we can.
 
   #  If the date has a timezone code like (CST) then remove it.  Seems
-  #  that DateTime::Format::Mail -> parse_datetime considers it invalid.        
+  #  that DateTime::Format::Mail -> parse_datetime considers it invalid.
   $$date =~ /\((.+)\)/;
   $$date =~ s/\(($1)\)//;
 
@@ -1604,7 +1584,7 @@ my $advanced;
 
    #  Return 1 if the date rule uses a comparision operator
    #  like >, <, or =.  In that case we'll need to load the
-   #  DateTime, DateTime::Format::Mail and DateTime::Format::DateParse 
+   #  DateTime, DateTime::Format::Mail and DateTime::Format::DateParse
    #  Perl modules.
 
    my ($field,$rule,$src,$dst) = split(/\t/, $line);
@@ -1646,7 +1626,7 @@ my @months = qw( Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec );
 
    #  Build the date in RFC822 format given a delta of n days.
 
-   my ($sec,$min,$hr,$mday,$mon,$year,$wday,$yday,$idist) = 
+   my ($sec,$min,$hr,$mday,$mon,$year,$wday,$yday,$idist) =
          localtime( time() - $delta*86400);
 
    $mon =~ s/^0//;
@@ -1699,5 +1679,34 @@ my $isnumber=0;
 
    return $isnumber;
 
+}
+
+sub recover {
+   my $conn = shift;
+   my $mbx = shift;
+   my $cmd = shift;
+   my $retry_wait = 5;
+   my $flag = 1;
+   local @response=();
+   do {
+       Log("Wait $retry_wait seconds before retrying ...");
+       sleep $retry_wait;
+       $retry_wait *= 2 if $retry_wait < 1800;
+       connectToHost($host, \$conn) or die;
+       login($user,$pwd,$conn) or die;
+       Log("SELECT $mbx") if $debug;
+       sendCommand($conn, "1 SELECT \"$mbx\"");
+       while (1) {
+           readResponse($conn);
+           if ($response =~ /^1 OK/) {
+               $flag=0;
+               last;
+           }
+           elsif ($response =~ /\* BYE Connection is closed|Server Unavailable/) {
+               last;
+           }
+       }
+   } while ($flag);
+   sendCommand($conn, $cmd);
 }
 
