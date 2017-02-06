@@ -70,11 +70,13 @@ use feature 'state';
         Log("   Checking mailbox $mbx");
         %msgList = ();
         @msgs = ();
-	getMsgList( $keyfield, $mbx, \@msgs, $conn );
+        my @msgs_delete = ();
+        my $uid;
+	    getMsgList( $keyfield, $mbx, \@msgs, $conn );
         selectMbx( $mbx, $conn);
         foreach $msg ( @msgs ) {
              # ($msgnum,$msgid,$subject,$date) = split(/\|/, $msg);
-             ($msgnum,$key,$date) = split(/\|\|\|/, $msg);
+             ($msgnum,$uid,$key,$date) = split(/\|\|\|/, $msg);
 
              if ( $md5_hash ) {
                 Log("Using md5 hash of msg body as the key") if $debug;
@@ -101,26 +103,18 @@ use feature 'state';
                    Log("Would have purged msgnum $msgnum");
                    next;
                 }
-                if ( $move2mbx ) {
-                   $moved++ if moveMsg( $mbx, $msgnum, $move2mbx, $conn );
-                }
-                do {
-                    if (deleteMsg( $mbx, $msgnum, $conn )) {
-                        last;
-                    } else {
-                        recover($conn, $mbx, "");
-                    }
-                } while (1);
-                $expungeMbxs{"$mbx"} = 1;
+                push(@msgs_delete,  $uid);
              }
         }
-   }
-
-   if ( $purge or $move2mbx ) {
-      @mbxs = keys %expungeMbxs;
-      foreach $mbx ( @mbxs ) {
-          expungeMbx( $mbx, $conn );
-      }
+        my @msgs_tmp = sort { $b <=> $a } @msgs_delete;
+        my $num_msgs=1000;
+        while (@msgs_delete = splice(@msgs_tmp, 0, $num_msgs)) {
+            $msglist_delete = join(",", @msgs_delete);
+            if ($move2mbx) {
+                $moved += move_local($conn, $msglist_delete, $mbx, $move2mbx);
+            }
+            deleteMsgs($msglist_delete, $mbx, $conn) if $msglist_delete;
+        }
    }
 
    logout( $conn );
@@ -465,8 +459,7 @@ my $field   = shift;
 my $mailbox = shift;
 my $msgs    = shift;
 my $conn    = shift;
-my $seen;
-my $empty;
+my $count=0;
 my $msgnum;
 
    trim( *mailbox );
@@ -491,10 +484,27 @@ my $msgnum;
 
    return unless $count;
 
+   #  Get a list of the msgs in the mailbox
+   #
+   undef @msgs;
+   undef $flags;
    undef @response;
    my $num_msgs=5000;
-   my $uid2;
-   for (my $uid1=1; $uid1<=$count; $uid1+=$num_msgs) {
+   my $uid2=1;
+   my $i=0;
+   my $uid;
+
+   if (open FMSGS, "<msgs.txt") {
+       while (<FMSGS>) {
+           ($msgnum, $uid, $value, $date) = split(/\|{3,3}/, $_);
+           push (@$msgs,"$msgnum|||$uid|||$value|||$date");
+       }
+       close(FMSGS);
+       $uid2=$msgnum+1;
+   }
+
+   open FMSGS, ">>msgs.txt" or die $!;
+   for (my $uid1=$uid2; $uid1<=$count; $uid1+=$num_msgs) {
    $uid2=$uid1+$num_msgs-1;
    if ($uid2>$count) {
        $uid2='*';
@@ -528,52 +538,47 @@ my $msgnum;
         return 0;
     }
    }
-   }
 
-   #  Get a list of the msgs in the mailbox
-   #
-   undef @msgs;
-   undef $flags;
-   for $i (0 .. $#response) {
-	$seen=0;
-	$_ = $response[$i];
-
+   while ($i <= $#response) {
 	if ( $response[$i] =~ /FETCH \(UID / ) {
-	   $response[$i] =~ /\* ([^FETCH \(UID]*)/;
-	   $msgnum = $1;
+	    $response[$i] =~ /\* ([0-9]+) FETCH \(UID ([0-9]+) /;
+	    $msgnum = $1;
+        $uid = $2;
 	}
-
 	if ($response[$i] =~ /FLAGS/) {
 	    #  Get the list of flags
 	    $response[$i] =~ /FLAGS \(([^\)]*)/;
    	    $flags =~ s/\\Recent//;
 	    $flags = $1;
 	}
-        if ( $response[$i] =~ /INTERNALDATE ([^\)]*)/ ) {
-            $response[$i] =~ /INTERNALDATE (.+) BODY/i;
-            $date = $1;
-            $date =~ s/"//g;
+    if ( $response[$i] =~ /INTERNALDATE ([^\)]*)/ ) {
+        $response[$i] =~ /INTERNALDATE (.+) BODY/i;
+        $date = $1;
+        $date =~ s/"//g;
 	}
-        if ( $response[$i] =~ /^Subject:/ ) {
-	   $response[$i] =~ /Subject: (.+)/;
-           $subject = $1;
-        }
+    if ( $response[$i] =~ /^Subject:/ ) {
+	    $response[$i] =~ /Subject: (.+)/;
+        $subject = $1;
+    }
 	if ( $response[$i] =~ /^$field:/i ) {
 	    ($label,$value) = split(/:\s*/, $response[$i],2);
             trim(*value);
             if ( $value eq '' ) {
                # Line-wrap, get it from the next line
-               $value = $response[$i+1];
+               $value = $response[++$i];
                trim(*value);
             }
             if ( $debug ) {
                Log("$msgnum   $value   $date $subject");
             }
             $value = lc( $value );
-	    push (@$msgs,"$msgnum|||$value|||$date");
-        }
-
+	    push (@$msgs,"$msgnum|||$uid|||$value|||$date");
+	    print FMSGS ("$msgnum|||$uid|||$value|||$date\n");
+    }
+    $i++;
    }
+   }
+   close(FMSGS);
 }
 
 
@@ -587,7 +592,7 @@ my $message = shift;
 
    Log("   Fetching msg $msgnum...") if $debug;
 
-   sendCommand( $conn, "$rsn FETCH $msgnum (rfc822)");
+   sendCommand( $conn, "$rsn UID FETCH $msgnum (rfc822)");
    while (1) {
 	readResponse ($conn);
 	if ( $response =~ /^$rsn OK/i ) {
@@ -727,37 +732,94 @@ my $rc = 0;
 
 }
 
+sub move_local {
+
+my $conn    = shift;
+my $msglist = shift;
+my $srcmbx  = shift;
+my $dstmbx  = shift;
+my $moved=0;
+
+   #  Move filtered messages from the mailbox they are in to
+   #  the designated mailbox on the localhost.
+
+   $msglist =~ s/\s+$//;
+   return $moved if $msglist eq '';
+
+   Log("   Moving msg number(s) $msglist to $dstmbx") if $debug;
+
+   my $moved = $msglist =~ tr/,/,/ + 1;
+   sendCommand ($conn, "1 COPY $msglist \"$dstmbx\"");
+   while (1) {
+        readResponse ( $conn );
+        last if $response =~ /^1 OK/i;
+        if ($response =~ /^1 NO|^1 BAD/) {
+             Log("unexpected COPY response: $response");
+             Log("Please verify that mailbox $dstmbx exists");
+             exit;
+        }
+        elsif ( $response =~ /Broken pipe|Connection reset by peer|\* BYE Connection is closed|Server Unavailable/i ) {
+            recover($conn, $srcmbx, "1 COPY $msglist \"$dstmbx\"");
+        }
+   }
+   return $moved;
+}
+
+sub deleteMsgs {
+
+my $msglist = shift;
+my $mbx  = shift;
+my $conn = shift;
+my $rc;
+
+   return if $msglist eq '';
+
+   sendCommand ( $conn, "1 UID STORE $msglist +FLAGS.SILENT (\\Deleted)");
+   while (1) {
+        readResponse ($conn);
+        last if $response =~ /^1 OK/i;
+        if ( $response =~ /^1 NO|^1 BAD/ ) {
+           Log("Error setting \Deleted flags");
+           Log("Unexpected STORE response: $response");
+           return 0;
+        }
+        elsif ( $response =~ /Broken pipe|Connection reset by peer|\* BYE Connection is closed|Server Unavailable/i ) {
+            recover($conn, $mbx, "1 UID STORE $msglist +FLAGS.SILENT (\\Deleted)");
+        }
+   }
+
+   expungeMbx( $mbx, $conn );
+
+}
+
 sub expungeMbx {
 
 my $mbx   = shift;
 my $conn  = shift;
 
-   print STDOUT "Purging mailbox $mbx...";
-
-   sendCommand ($conn, "$rsn SELECT \"$mbx\"");
-   while (1) {
-        readResponse ($conn);
-        last if ( $response =~ /^$rsn OK/i );
-   }
+   Log("   Expunging mailbox $mbx") if $debug;
 
    sendCommand ( $conn, "1 EXPUNGE");
    $expunged=0;
    while (1) {
         readResponse ($conn);
         $expunged++ if $response =~ /\* (.+) Expunge/i;
+        last if $response =~ /^1 OK EXPUNGE complete/i;
         last if $response =~ /^1 OK/;
 
-	if ( $response =~ /^1 BAD|^1 NO/i ) {
-	   print "Error purging messages: $response\n";
-	   last;
-	}
+	    if ( $response =~ /^1 BAD|^1 NO/i ) {
+	       Log("Error purging messages: $response");
+	       last;
+	    }
+        elsif ( $response =~ /Broken pipe|Connection reset by peer|\* BYE Connection is closed|Server Unavailable/i ) {
+            recover($conn, $mbx, "1 EXPUNGE");
+        }
    }
 
    $total += $expunged;
 
-   print STDOUT "$expunged messages purged\n";
-
 }
+
 
 sub updateFlags {
 

@@ -865,10 +865,13 @@ my $conn  = shift;
         last if $response =~ /^1 OK EXPUNGE complete/i;
         last if $response =~ /^1 OK/;
 
-	if ( $response =~ /^1 BAD|^1 NO/i ) {
-	   Log("Error purging messages: $response");
-	   last;
-	}
+	    if ( $response =~ /^1 BAD|^1 NO/i ) {
+	       Log("Error purging messages: $response");
+	       last;
+	    }
+        elsif ( $response =~ /Broken pipe|Connection reset by peer|\* BYE Connection is closed|Server Unavailable/i ) {
+            recover($conn, $mbx, "1 EXPUNGE");
+        }
    }
 
    $totalExpunged += $expunged;
